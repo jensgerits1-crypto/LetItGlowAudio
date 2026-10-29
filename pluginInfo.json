@@ -3,8 +3,8 @@
   "name": "Let It Glow Audio (LAN test)",
   "author": "Let It Glow community prototype",
   "description": "Experimental local browser playback of the FPP sequence-associated audio file; not live soundcard capture.",
-  "srcURL": "https://github.com/REPLACE_WITH_YOUR_USERNAME/LetItGlowAudio.git",
-  "homeURL": "https://github.com/REPLACE_WITH_YOUR_USERNAME/LetItGlowAudio",
+  "srcURL": "https://github.com/jensgerits1-crypto/LetItGlowAudio.git",
+  "homeURL": "https://github.com/jensgerits1-crypto/LetItGlowAudio",
   "allowUpdates": 0,
   "versions": [{"minFPPVersion":"10.0","maxFPPVersion":"0","branch":"main","sha":""}]
 }
