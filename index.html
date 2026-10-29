@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Let It Glow Audio</title>
+<style>
+body{font:17px system-ui,-apple-system,sans-serif;background:#101827;color:#fff;margin:0;padding:24px;text-align:center}main{max-width:560px;margin:3vh auto}button{font:inherit;padding:15px 24px;border:0;border-radius:12px;background:#b7f7d0;color:#102017;cursor:pointer}audio{width:100%;margin:18px 0}small{color:#b6c3d4}#status{margin:20px 0;white-space:pre-line}.metrics{background:#1d2b40;padding:12px;border-radius:10px;color:#dbeafe;margin:15px 0}a{color:#b7f7d0}label{display:block;margin:12px}#hint{color:#ffdb8a;min-height:2em}#go{max-width:100%}
+</style></head><body><main><h1>✨ Let It Glow Audio</h1><p>Luister via het lokale wifinetwerk</p>
+<button id="go">▶ Start luisteren</button><div id="status">Wachten op FPP…</div><div class="metrics" id="metrics">Synchronisatie: wachten…</div>
+<label><input type="checkbox" id="diagnostic"> Diagnose: synchronisatiecorrecties uitschakelen</label><audio id="player" controls preload="auto" playsinline></audio><div id="hint" role="status"></div>
+<p><small>v0.6 test · Houd dit scherm actief · Gebruik de luidspreker van je gsm (geen Bluetooth) · Tik eenmaal op Start luisteren</small></p><p><a href="https://www.facebook.com/share/19ccTSeDQQ/">DJ Jens op Facebook</a></p></main>
+<script>
+'use strict';
+const audio=document.getElementById('player'),status=document.getElementById('status'),go=document.getElementById('go'),metrics=document.getElementById('metrics'),diagnostic=document.getElementById('diagnostic'),hint=document.getElementById('hint');
+let enabled=false,media='',busy=false,clockOffset=0,haveClock=false,target=null,rtt=0,history=[],lastSeek=0;
+let generation=0,preparing=false,playPending=false,prepared=false,prepareTimer=null,lastPreparedAt=0;
+const now=()=>Date.now()/1000;
+function syncClock(s,t0,t1){const v=Number(s.serverTime);if(!Number.isFinite(v))return;const sample=v-(t0+t1)/2;if(!haveClock){clockOffset=sample;haveClock=true;}else if(Math.abs(sample-clockOffset)<0.5)clockOffset=clockOffset*.9+sample*.1;}
+function expected(){return target?target.elapsed+Math.max(0,now()+clockOffset-target.sampleTime):null;}
+function clampPos(t){return Math.max(0,Math.min(t,Number.isFinite(audio.duration)?Math.max(0,audio.duration-.08):t));}
+function waitEvent(names,timeout,token){return new Promise(resolve=>{if(token!==generation)return resolve(false);let done=false;const ev=names.split(' ');function finish(ok){if(done)return;done=true;ev.forEach(n=>audio.removeEventListener(n,onEvent));clearTimeout(timer);resolve(ok&&token===generation);}function onEvent(){finish(true);}ev.forEach(n=>audio.addEventListener(n,onEvent,{once:true}));const timer=setTimeout(()=>finish(false),timeout);});}
+async function seekToCurrent(token){if(token!==generation)return false;const pos=expected();if(pos===null||!Number.isFinite(pos))return false;const wanted=clampPos(pos);try{if(Math.abs(audio.currentTime-wanted)>.08){audio.currentTime=wanted;lastSeek=Date.now();const ok=await waitEvent('seeked',1700,token);if(!ok&&audio.seeking)return false;}return token===generation&&!audio.seeking;}catch(e){return false;}}
+async function freshStatus(token){const t0=now();try{const r=await fetch('/api/status',{cache:'no-store'});const s=await r.json();const t1=now();if(token!==generation||!s.ok||s.media!==media)return false;syncClock(s,t0,t1);const elapsed=Number(s.elapsed),sampleTime=Number(s.sampleTime||s.serverTime);if(Number.isFinite(elapsed)&&Number.isFinite(sampleTime))target={elapsed,sampleTime};return true;}catch(e){return false;}}
+async function prepare(token){if(preparing||!enabled||!media||token!==generation)return;preparing=true;prepared=false;hint.textContent='⏳ Muziek synchroniseren met de lichtshow…';go.textContent='⏳ Synchroniseren…';
+ try{
+  if(audio.readyState<1){const ok=await waitEvent('loadedmetadata error',7000,token);if(!ok||audio.error)throw Error('MP3 kon niet worden geladen');}
+  if(token!==generation)return;
+  // Do not assume that a successful currentTime assignment means the decoder has completed its seek.
+  if(!await seekToCurrent(token))throw Error('Zoeken naar afspeelpositie mislukt');
+  // Refresh FPP after seeking; the show keeps moving while the phone decodes the file.
+  if(!await freshStatus(token))throw Error('FPP-status tijdelijk niet beschikbaar');
+  if(!await seekToCurrent(token))throw Error('Laatste synchronisatie mislukt');
+  if(token!==generation)return;
+  prepared=true;lastPreparedAt=Date.now();history=[];
+  await startPrepared(token);
+ }catch(e){if(token===generation){hint.textContent='Synchronisatie niet gelukt: '+e.message+'. Tik opnieuw op Start luisteren.';go.textContent='▶ Opnieuw proberen';}}
+ finally{if(token===generation)preparing=false;}
+}
+async function startPrepared(token){if(!enabled||!prepared||token!==generation||playPending)return;playPending=true;
+ try{await audio.play();if(token!==generation)return;hint.textContent='';go.textContent='✓ Luisteren ingeschakeld';}
+ catch(e){if(token===generation){hint.textContent='Safari/Chrome blokkeert afspelen. Tik opnieuw op Start luisteren of op ▶ in de speler.';go.textContent='▶ Tik om muziek te starten';}}
+ finally{playPending=false;}
+}
+function correct(){if(!target||!enabled||!prepared||audio.readyState<1||audio.paused||audio.seeking)return;const t=expected();if(t===null||!Number.isFinite(t))return;
+ const error=clampPos(t)-audio.currentTime;history.push(error);if(history.length>24)history.shift();const sorted=[...history].sort((a,b)=>a-b),median=sorted[Math.floor(sorted.length/2)];
+ metrics.textContent='Geschatte browserafwijking: '+Math.round(error*1000)+' ms · mediaan '+Math.round(median*1000)+' ms · netwerk '+Math.round(rtt)+' ms · '+(diagnostic.checked?'diagnose':'stabiele modus');
+ // Avoid tiny jumps and playback-rate modulation: both can cause audible artifacts.
+ if(diagnostic.checked||history.length<20||Date.now()-lastSeek<12000)return;
+ const same=history.filter(x=>Math.sign(x)===Math.sign(median)&&Math.abs(x)>.8).length;
+ if(Math.abs(median)>1.1&&same>=20){const wanted=clampPos(t);try{audio.currentTime=wanted;lastSeek=Date.now();history=[];}catch(e){}}
+}
+async function poll(){if(busy)return;busy=true;const t0=now();try{const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const s=await r.json();const t1=now();rtt=(t1-t0)*1000;
+ if(!s.ok){status.textContent=s.error||'FPP-status niet beschikbaar';return;}syncClock(s,t0,t1);
+ if(!s.media){if(media){generation++;media='';prepared=false;preparing=false;audio.pause();audio.removeAttribute('src');audio.load();}target=null;history=[];status.textContent='Geen gekoppeld audiobestand gevonden.\nSpeel een sequence af.';metrics.textContent='Wachten op FPP…';return;}
+ const nextMedia=String(s.media),elapsed=Number(s.elapsed),sampleTime=Number(s.sampleTime||s.serverTime);
+ status.textContent='🎵 '+(s.title||nextMedia)+' · '+Math.floor(elapsed)+' sec';
+ if(Number.isFinite(elapsed)&&Number.isFinite(sampleTime))target={elapsed,sampleTime};
+ if(media!==nextMedia){generation++;media=nextMedia;prepared=false;preparing=false;history=[];audio.pause();audio.src='/media/'+encodeURIComponent(media);audio.load();if(enabled)prepare(generation);else hint.textContent='Tik op Start luisteren om audio toe te staan.';}
+ }catch(e){status.textContent='Verbindingsfout: '+e.message;}finally{busy=false;}}
+go.addEventListener('click',()=>{enabled=true;hint.textContent='';if(!media){hint.textContent='Start eerst een sequence in FPP.';poll();return;}
+ // A direct click can satisfy the browser's audio gesture requirement when a track is ready.
+ if(prepared){startPrepared(generation);}else if(!preparing){prepare(generation);}else{hint.textContent='⏳ Even wachten, de speler zoekt de juiste positie…';}
+});
+audio.addEventListener('error',()=>{if(media)hint.textContent='Audio kan niet worden geladen. Controleer het MP3-bestand op FPP.';});
+setInterval(poll,500);setInterval(correct,250);poll();
+</script></body></html>
